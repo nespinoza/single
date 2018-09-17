@@ -3,7 +3,7 @@ SINGLE --- A code for fitting single-transit events using stellar density inform
 
 The usage of the code is very simple. Do:
 
-   python single.py -lcfile PATHTOFILE -sdmean MEAN_STELLAR_DENSITY -sdsigma SDERROR -t0mean MEAN_TIME_OF_TRANSIT -t0sigma T0ERROR -ldlaw LDLAW
+   ``python single.py -lcfile PATHTOFILE -sdmean MEAN_STELLAR_DENSITY -sdsigma SDERROR -t0mean MEAN_TIME_OF_TRANSIT -t0sigma T0ERROR -ldlaw LDLAW``
 
 Where: 
  
