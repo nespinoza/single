@@ -20,4 +20,7 @@ Where:
    ``LDLAW``                    The limb-darkening law to use (can be ``linear`` or any two-parameter law from: ``quadratic``, 
                                 ``square-root`` and ``logarithmic``).
 
-Optionally, you can set ``-resampling True`` if you want to apply Kepler-like resampling.
+Optionally, you can set ``--resampling`` if you want to apply Kepler-like resampling. You can modify the integration time of the resampling by 
+using ``-texp NUMBER`` where ``NUMBER`` is the exposure time in days (default is ``0.020434`` days, which is the Kepler long-cadence effective 
+exposure time), and the ammount of resampling points by specifying it with the variable ``-nresampling N``, with ``N`` the number of points to 
+resample (default is 20).

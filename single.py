@@ -23,18 +23,22 @@ parser.add_argument('-sdmean', default=None)
 parser.add_argument('-sdsigma', default=None)
 parser.add_argument('-t0mean', default=None)
 parser.add_argument('-t0sigma', default=None)
-parser.add_argument('-resampling', default = False)
+parser.add_argument('--resampling', dest='resampling', action='store_true')
+parser.set_defaults(resampling=False)
 parser.add_argument('-nresampling', default=20)
+parser.add_argument('-texp', default=0.020434)
 parser.add_argument('-nlive', default=500)
 parser.add_argument('-ldlaw', default='linear')
 args = parser.parse_args()
 ############ OPTIONAL INPUTS ###################
 filename = args.lcfile
 sd_mean,sd_sigma = np.double(args.sdmean),np.double(args.sdsigma)
-if (args.resampling).lower() == 'true':
-    RESAMPLING = True
-else:
-    RESAMPLING = False
+texp = np.double(args.texp)
+RESAMPLING = args.resampling
+#if (args.resampling).lower() == 'true':
+#    RESAMPLING = True
+#else:
+#    RESAMPLING = False
 NRESAMPLING = int(args.nresampling)
 n_live_points = int(args.nlive)
 ld_law = args.ldlaw
@@ -532,8 +536,8 @@ if ShowPlots:
     matplotlib.pyplot.ylabel('Relative flux (ppm)')
     matplotlib.pyplot.xlabel('Time from transit center (hours)')
     plt.tight_layout()
-    matplotlib.pyplot.savefig('transit_GP'+ld_law+'_ecc.pdf')
-    fout = open('transit_GP'+ld_law+'_ecc.dat','w')
+    matplotlib.pyplot.savefig('transit_'+ld_law+'.pdf')
+    fout = open('transit_'+ld_law+'.dat','w')
     fout.write('# Time \t Transit \t Trend model \t Trend sigma\n')
     # Save model for further plotting:
     for i in range(len(model_median)):
