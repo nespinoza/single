@@ -23,8 +23,12 @@ parser.add_argument('-sdmean', default=None)
 parser.add_argument('-sdsigma', default=None)
 parser.add_argument('-t0mean', default=None)
 parser.add_argument('-t0sigma', default=None)
+parser.add_argument('-Pmin', default=1.)
+parser.add_argument('-Pmax', default=1000.)
 parser.add_argument('--resampling', dest='resampling', action='store_true')
+parser.add_argument('--circular', dest='circular', action='store_true')
 parser.set_defaults(resampling=False)
+parser.set_defaults(circular=False)
 parser.add_argument('-nresampling', default=20)
 parser.add_argument('-texp', default=0.020434)
 parser.add_argument('-nlive', default=500)
@@ -32,9 +36,16 @@ parser.add_argument('-ldlaw', default='linear')
 args = parser.parse_args()
 ############ OPTIONAL INPUTS ###################
 filename = args.lcfile
-sd_mean,sd_sigma = np.double(args.sdmean),np.double(args.sdsigma)
+sd_mean,sd_sigma = args.sdmean, args.sdsigma
+if sd_mean is None:
+    stellar_density = False
+else:
+    sd_mean,sd_sigma = np.double(sdmean),np.double(sdsigma)
+    stellar_density = True
+P_low,P_up = np.double(args.Pmin),np.double(args.Pmax)
 texp = np.double(args.texp)
 RESAMPLING = args.resampling
+CIRCULAR = args.circular
 #if (args.resampling).lower() == 'true':
 #    RESAMPLING = True
 #else:
@@ -53,8 +64,6 @@ t = t - tzero
 
 print 'RESAMPLING:',RESAMPLING,' LD LAW:',ld_law
 ################################################
-stellar_density = True
-
 # Transit model priors:
 # Rp/Rs
 rp_low,rp_up = 0.001,0.5 
@@ -62,8 +71,6 @@ rp_low,rp_up = 0.001,0.5
 b_low,b_up = 0.,1.+rp_up
 # a/Rs
 aR_low,aR_up =  1.0,300.
-# P:
-P_low,P_up = 0.1,1000.
 
 # Define priors for q1 and q2, if you have any. If you do, prior is assumed truncated normal 
 # between 0 and 1. If you don't, set all numbers to 0. This assumes you want a uniform distribution 
@@ -190,12 +197,13 @@ def prior(cube, ndim, nparams):
     cube[nprior] = transform_loguniform(cube[nprior],1./(24.*60.),1.)
     nprior = nprior + 1
     cube[nprior] = transform_loguniform(cube[nprior],1.,10000)
-    # Eccentricity:
-    nprior = nprior + 1
-    cube[nprior] = transform_uniform(cube[nprior],0.,1.)
-    # Omega:
-    nprior = nprior + 1
-    cube[nprior] = transform_uniform(cube[nprior],0.,360.)
+    # Eccentricity and Omega if CIRCULAR is False:
+    if not CIRCULAR:
+        nprior = nprior + 1
+        cube[nprior] = transform_uniform(cube[nprior],0.,1.)
+        # Omega:
+        nprior = nprior + 1
+        cube[nprior] = transform_uniform(cube[nprior],0.,360.)
     # Period:
     nprior = nprior + 1 
     cube[nprior] = transform_loguniform(cube[nprior],P_low,P_up)
@@ -250,7 +258,6 @@ def get_transit_model(t,t0,P,p,a,inc,q1,q2,ecc,omega,ld_law):
         params.u = [coeff1,coeff2]
     return m.light_curve(params)
 
-texp = 0.020434
 if RESAMPLING:
     tin = np.array([])
     for i in range(len(t)):
@@ -321,11 +328,21 @@ def transit_model(rp,aR,b,t0,q1,q2,ecc,omega,P,tt=None):
 def loglike(cube, ndim, nparams):
     # Extract parameters:
     if ld_law != 'linear':
-        rp,aR,b,t0,q1,q2,f0,jitter,scale,gpsigma,ecc,omega,P = cube[0],cube[1],cube[2],cube[3],cube[4],\
+        if not CIRCULAR:
+            rp,aR,b,t0,q1,q2,f0,jitter,scale,gpsigma,ecc,omega,P = cube[0],cube[1],cube[2],cube[3],cube[4],\
                                                cube[5],cube[6],cube[7],cube[8],cube[9],cube[10],cube[11],cube[12]
+        else:
+            rp,aR,b,t0,q1,q2,f0,jitter,scale,gpsigma,P = cube[0],cube[1],cube[2],cube[3],cube[4],\
+                                               cube[5],cube[6],cube[7],cube[8],cube[9],cube[10]
+            ecc,omega = 0.,90.
     else:
-        rp,aR,b,t0,q1,f0,jitter,scale,gpsigma,ecc,omega,P = cube[0],cube[1],cube[2],cube[3],cube[4],cube[5],\
+        if not CIRCULAR:
+            rp,aR,b,t0,q1,f0,jitter,scale,gpsigma,ecc,omega,P = cube[0],cube[1],cube[2],cube[3],cube[4],cube[5],\
                                                                      cube[6],cube[7],cube[8],cube[9],cube[10],cube[11]
+        else:
+            rp,aR,b,t0,q1,f0,jitter,scale,gpsigma,P = cube[0],cube[1],cube[2],cube[3],cube[4],cube[5],\
+                                                                     cube[6],cube[7],cube[8],cube[9]
+            ecc,omega = 0.,90.
         q2 = 0. 
 
     # Get residuals:
@@ -346,7 +363,8 @@ if ld_law != 'linear':
     n_params = 13
 else:
     n_params = 12
-
+if CIRCULAR:
+    n_params = n_params - 2
 if os.path.exists('mnest_out_folder'):
     counter = 0
     while True:
@@ -399,12 +417,13 @@ if not os.path.exists(out_pickle_name):
     out['posterior_samples']['scale'] = posterior_samples[:,nprior]
     nprior = nprior + 1
     out['posterior_samples']['gpsigma'] = posterior_samples[:,nprior]
-    # Eccentricity:
-    nprior = nprior + 1
-    out['posterior_samples']['ecc'] = posterior_samples[:,nprior]
-    # Omega:
-    nprior = nprior + 1
-    out['posterior_samples']['omega'] = posterior_samples[:,nprior]
+    if not CIRCULAR:
+        # Eccentricity:
+        nprior = nprior + 1
+        out['posterior_samples']['ecc'] = posterior_samples[:,nprior]
+        # Omega:
+        nprior = nprior + 1
+        out['posterior_samples']['omega'] = posterior_samples[:,nprior]
     # Period:
     nprior = nprior + 1
     out['posterior_samples']['P'] = posterior_samples[:,nprior]
@@ -432,12 +451,13 @@ else:
     posterior_samples[:,nprior] = out['posterior_samples']['scale'] 
     nprior = nprior + 1 
     posterior_samples[:,nprior] = out['posterior_samples']['gpsigma']
-    # Eccentricity:
-    nprior = nprior + 1 
-    posterior_samples[:,nprior] = out['posterior_samples']['ecc'] 
-    # Omega:
-    nprior = nprior + 1 
-    posterior_samples[:,nprior] =out['posterior_samples']['omega'] 
+    if not CIRCULAR:
+        # Eccentricity:
+        nprior = nprior + 1 
+        posterior_samples[:,nprior] = out['posterior_samples']['ecc'] 
+        # Omega:
+        nprior = nprior + 1 
+        posterior_samples[:,nprior] =out['posterior_samples']['omega'] 
     # Period:
     nprior = nprior + 1 
     posterior_samples[:,nprior] = out['posterior_samples']['P']
@@ -464,9 +484,17 @@ if ShowPlots:
     theta = np.median(posterior_samples,axis=0)
     # Extract parameters:
     if ld_law != 'linear':
-        rp,aR,b,t0,q1,q2,f0,jitter,scale,gpsigma,ecc,omega,P = theta
+        if not CIRCULAR:
+            rp,aR,b,t0,q1,q2,f0,jitter,scale,gpsigma,ecc,omega,P = theta
+        else:
+            rp,aR,b,t0,q1,q2,f0,jitter,scale,gpsigma,P = theta
+            ecc,omega = 0.,90.
     else:
-        rp,aR,b,t0,q1,f0,jitter,scale,gpsigma,ecc,omega,P = theta
+        if not CIRCULAR:
+            rp,aR,b,t0,q1,f0,jitter,scale,gpsigma,ecc,omega,P = theta
+        else:
+            rp,aR,b,t0,q1,f0,jitter,scale,gpsigma,P = theta
+            ecc,omega = 0.,90.
         q2 = 0.
   
     # Substract f0 to flux:
@@ -497,19 +525,35 @@ if ShowPlots:
     mm = np.array([])
     for i in range(nsample):
         if ld_law != 'linear':
-            rp,aR,b,t0,q1,q2,f0,jitter,scale,gpsigma,ecc,omega,P = [out['posterior_samples']['p'][idx[i]],out['posterior_samples']['aR'][idx[i]],\
+            if not CIRCULAR:
+                rp,aR,b,t0,q1,q2,f0,jitter,scale,gpsigma,ecc,omega,P = [out['posterior_samples']['p'][idx[i]],out['posterior_samples']['aR'][idx[i]],\
                        out['posterior_samples']['b'][idx[i]],\
                        out['posterior_samples']['t0'][idx[i]],out['posterior_samples']['q1'][idx[i]],out['posterior_samples']['q2'][idx[i]],\
                        out['posterior_samples']['norm_constant'][idx[i]],out['posterior_samples']['jitter'][idx[i]],out['posterior_samples']['scale'][idx[i]],\
                        out['posterior_samples']['gpsigma'][idx[i]],\
                        out['posterior_samples']['ecc'][idx[i]],out['posterior_samples']['omega'][idx[i]],out['posterior_samples']['P'][idx[i]]]
+            else:
+                rp,aR,b,t0,q1,q2,f0,jitter,scale,gpsigma,P = [out['posterior_samples']['p'][idx[i]],out['posterior_samples']['aR'][idx[i]],\
+                       out['posterior_samples']['b'][idx[i]],\
+                       out['posterior_samples']['t0'][idx[i]],out['posterior_samples']['q1'][idx[i]],out['posterior_samples']['q2'][idx[i]],\
+                       out['posterior_samples']['norm_constant'][idx[i]],out['posterior_samples']['jitter'][idx[i]],out['posterior_samples']['scale'][idx[i]],\
+                       out['posterior_samples']['gpsigma'][idx[i]],out['posterior_samples']['P'][idx[i]]]
+                ecc,omega = 0.,90.
         else:
-            rp,aR,b,t0,q1,f0,jitter,scale,gpsigma,ecc,omega,P = [out['posterior_samples']['p'][idx[i]],out['posterior_samples']['aR'][idx[i]],\
+            if not CIRCULAR:
+                rp,aR,b,t0,q1,f0,jitter,scale,gpsigma,ecc,omega,P = [out['posterior_samples']['p'][idx[i]],out['posterior_samples']['aR'][idx[i]],\
                        out['posterior_samples']['b'][idx[i]],\
                        out['posterior_samples']['t0'][idx[i]],out['posterior_samples']['q1'][idx[i]],\
                        out['posterior_samples']['norm_constant'][idx[i]],out['posterior_samples']['jitter'][idx[i]],out['posterior_samples']['scale'][idx[i]],\
                        out['posterior_samples']['gpsigma'][idx[i]],\
                        out['posterior_samples']['ecc'][idx[i]],out['posterior_samples']['omega'][idx[i]],out['posterior_samples']['P'][idx[i]]]
+            else:
+                rp,aR,b,t0,q1,f0,jitter,scale,gpsigma,P = [out['posterior_samples']['p'][idx[i]],out['posterior_samples']['aR'][idx[i]],\
+                       out['posterior_samples']['b'][idx[i]],\
+                       out['posterior_samples']['t0'][idx[i]],out['posterior_samples']['q1'][idx[i]],\
+                       out['posterior_samples']['norm_constant'][idx[i]],out['posterior_samples']['jitter'][idx[i]],out['posterior_samples']['scale'][idx[i]],\
+                       out['posterior_samples']['gpsigma'][idx[i]], out['posterior_samples']['P'][idx[i]]]
+                ecc,omega = 0.,90. 
             q2 = 0.
         tm = transit_model(rp,aR,b,t0,q1,q2,ecc,omega,P,tt=tmodel)
         #print 'tm.shape:',tm.shape
