@@ -1,11 +1,10 @@
-from scipy.signal import medfilt
+from __future__ import division
 from matplotlib import rc,rcParams
 import matplotlib.pyplot as plt
 import seaborn as sns
 import pymultinest
 import batman
 import george
-from george import kernels
 import numpy as np
 import argparse
 try:
@@ -30,27 +29,24 @@ parser.add_argument('--circular', dest='circular', action='store_true')
 parser.set_defaults(resampling=False)
 parser.set_defaults(circular=False)
 parser.add_argument('-nresampling', default=20)
+parser.add_argument('--efficient_sampling', dest='eff_sampling', action='store_true')
+parser.set_defaults(eff_sampling=True)
 parser.add_argument('-texp', default=0.020434)
 parser.add_argument('-nlive', default=500)
 parser.add_argument('-ldlaw', default='linear')
 args = parser.parse_args()
+
 ############ OPTIONAL INPUTS ###################
 filename = args.lcfile
-sd_mean,sd_sigma = args.sdmean, args.sdsigma
-if sd_mean is None:
-    stellar_density = False
-else:
-    sd_mean,sd_sigma = np.double(sdmean),np.double(sdsigma)
-    stellar_density = True
+
+sd_mean,sd_sigma = np.double(args.sdmean), np.double(args.sdsigma)
+
 P_low,P_up = np.double(args.Pmin),np.double(args.Pmax)
 texp = np.double(args.texp)
 RESAMPLING = args.resampling
 CIRCULAR = args.circular
-#if (args.resampling).lower() == 'true':
-#    RESAMPLING = True
-#else:
-#    RESAMPLING = False
 NRESAMPLING = int(args.nresampling)
+EFF_SAMPLING = args.eff_sampling
 n_live_points = int(args.nlive)
 ld_law = args.ldlaw
 
@@ -62,15 +58,17 @@ ndata = len(t)
 tzero = t[0]
 t = t - tzero
 
-print 'RESAMPLING:',RESAMPLING,' LD LAW:',ld_law
+print 'RESAMPLING:',RESAMPLING,' LD LAW:',ld_law,' EFFICIENT SAMPLING OF p AND b:',EFF_SAMPLING
 ################################################
 # Transit model priors:
 # Rp/Rs
 rp_low,rp_up = 0.001,0.5 
+# If efficient sampling, calculate triangle area:
+if EFF_SAMPLING:
+    Ar = (rp_up - rp_low)/(2. + rp_low + rp_up)
+
 # Impact parameter:
 b_low,b_up = 0.,1.+rp_up
-# a/Rs
-aR_low,aR_up =  1.0,300.
 
 # Define priors for q1 and q2, if you have any. If you do, prior is assumed truncated normal 
 # between 0 and 1. If you don't, set all numbers to 0. This assumes you want a uniform distribution 
@@ -164,12 +162,20 @@ def transform_truncated_normal(x,mu,sigma,a=0.,b=1.):
     return truncnorm.ppf(x,ar,br,loc=mu,scale=sigma)
 
 def prior(cube, ndim, nparams):
-    # Prior on "rp" is uniform:
-    cube[0] = transform_uniform(cube[0],rp_low,rp_up)
-    # Same for aR:
-    cube[1] = transform_loguniform(cube[1],aR_low,aR_up)
-    # And impact parameter:
-    cube[2] = transform_uniform(cube[2],b_low,b_up)
+    if EFF_SAMPLING:
+        # Sample r1:
+        cube[0] = transform_uniform(cube[0],0.,1.)
+    else:
+        # Prior on "rp" is uniform:
+        cube[0] = transform_uniform(cube[0],rp_low,rp_up)
+    # Prior on rhostar is normal, mean and standard deviation given as input
+    cube[1] = transform_normal(cube[1],sd_mean,sd_sigma)
+    if EFF_SAMPLING:
+        # Sample r2:
+        cube[2] = transform_uniform(cube[2],0.,1.)
+    else:
+        # And impact parameter:
+        cube[2] = transform_uniform(cube[2],b_low,b_up)
     # And t0:
     cube[3] = transform_normal(cube[3],t00,t0_sigma0)
     # Uniform on the transformed LD coeffs (q1 and q2):
@@ -181,9 +187,9 @@ def prior(cube, ndim, nparams):
         else:
             nprior = 4
     else:
-        cube[4] = utils.transform_truncated_normal(cube[4],q10,q1_sigma0)
+        cube[4] = transform_truncated_normal(cube[4],q10,q1_sigma0)
         if ld_law != 'linear':
-            cube[5] = utils.transform_truncated_normal(cube[5],q20,q2_sigma0)
+            cube[5] = transform_truncated_normal(cube[5],q20,q2_sigma0)
             nprior = 5
         else:
             nprior = 4
@@ -242,13 +248,13 @@ def init_batman(t,law):
     m = batman.TransitModel(params,t)
     return params,m
 
-def get_transit_model(t,t0,P,p,a,inc,q1,q2,ecc,omega,ld_law):
+def get_transit_model(t,t0,P,p,rhostar,inc,q1,q2,ecc,omega,ld_law):
     params,m = init_batman(t,law=ld_law)
     coeff1,coeff2 = reverse_ld_coeffs(ld_law, q1, q2)
     params.t0 = t0
     params.per = P
     params.rp = p
-    params.a = a
+    params.a = ((rhostar*G*((P*24.*3600.)**2))/(3.*np.pi))**(1./3.)
     params.inc = inc
     params.ecc = ecc
     params.w = omega
@@ -271,7 +277,8 @@ else:
 tin = tin.astype('float64') 
 
 params,m = init_batman(tin,law=ld_law)
-def transit_model(rp,aR,b,t0,q1,q2,ecc,omega,P,tt=None):
+def transit_model(rp,rhostar,b,t0,q1,q2,ecc,omega,P,tt=None):
+    aR = ((rhostar*G*((P*24.*3600.)**2))/(3.*np.pi))**(1./3.)
     # Extract parameters:
     if ld_law != 'linear':
         coeff1,coeff2 = reverse_ld_coeffs(ld_law,q1,q2)
@@ -281,7 +288,7 @@ def transit_model(rp,aR,b,t0,q1,q2,ecc,omega,P,tt=None):
     ecc_factor = (1. + ecc*np.sin(omega * np.pi/180.))/(1. - ecc**2)
     inc_inv_factor = (b/aR)*ecc_factor
     # Check that b and b/aR are in physically meaningful ranges:
-    if b>1.+rp or inc_inv_factor >=1.:
+    if (b>1.+rp) or (inc_inv_factor >=1.):
         return np.ones(len(t))
 
     # Compute inclination of the orbit:
@@ -315,9 +322,9 @@ def transit_model(rp,aR,b,t0,q1,q2,ecc,omega,P,tt=None):
         else:
             ttin = tt 
         if ld_law != 'linear':
-            model = get_transit_model(ttin,t0,P,rp,aR,inc,q1,q2,ecc,omega,ld_law)
+            model = get_transit_model(ttin,t0,P,rp,rhostar,inc,q1,q2,ecc,omega,ld_law)
         else:
-            model = get_transit_model(ttin,t0,P,rp,aR,inc,q1,0.0,ecc,omega,ld_law)
+            model = get_transit_model(ttin,t0,P,rp,rhostar,inc,q1,0.0,ecc,omega,ld_law)
         if RESAMPLING:
             model_out = np.zeros(len(tt))
             for i in range(len(tt)):
@@ -329,36 +336,51 @@ def loglike(cube, ndim, nparams):
     # Extract parameters:
     if ld_law != 'linear':
         if not CIRCULAR:
-            rp,aR,b,t0,q1,q2,f0,jitter,scale,gpsigma,ecc,omega,P = cube[0],cube[1],cube[2],cube[3],cube[4],\
+            r1,rhostar,r2,t0,q1,q2,f0,jitter,scale,gpsigma,ecc,omega,P = cube[0],cube[1],cube[2],cube[3],cube[4],\
                                                cube[5],cube[6],cube[7],cube[8],cube[9],cube[10],cube[11],cube[12]
         else:
-            rp,aR,b,t0,q1,q2,f0,jitter,scale,gpsigma,P = cube[0],cube[1],cube[2],cube[3],cube[4],\
+            r1,rhostar,r2,t0,q1,q2,f0,jitter,scale,gpsigma,P = cube[0],cube[1],cube[2],cube[3],cube[4],\
                                                cube[5],cube[6],cube[7],cube[8],cube[9],cube[10]
             ecc,omega = 0.,90.
     else:
         if not CIRCULAR:
-            rp,aR,b,t0,q1,f0,jitter,scale,gpsigma,ecc,omega,P = cube[0],cube[1],cube[2],cube[3],cube[4],cube[5],\
+            r1,rhostar,r2,t0,q1,f0,jitter,scale,gpsigma,ecc,omega,P = cube[0],cube[1],cube[2],cube[3],cube[4],cube[5],\
                                                                      cube[6],cube[7],cube[8],cube[9],cube[10],cube[11]
         else:
-            rp,aR,b,t0,q1,f0,jitter,scale,gpsigma,P = cube[0],cube[1],cube[2],cube[3],cube[4],cube[5],\
+            r1,rhostar,r2,t0,q1,f0,jitter,scale,gpsigma,P = cube[0],cube[1],cube[2],cube[3],cube[4],cube[5],\
                                                                      cube[6],cube[7],cube[8],cube[9]
             ecc,omega = 0.,90.
         q2 = 0. 
 
+    aR = ((rhostar*G*((P*24.*3600.)**2))/(3.*np.pi))**(1./3.) 
+
+    if EFF_SAMPLING:
+        # In this case r1 ~ U(0,1) and r2 ~ U(0,1). Perform transformations:
+        if r1 > Ar: 
+            b,rp = (1+rp_low)*(1. + (r1-1.)/(1.-Ar)),\
+                  (1-r2)*rp_low + r2*rp_up
+        else:
+            b,rp = (1. + rp_low) + np.sqrt(r1/Ar)*r2*(rp_up-rp_low),\
+                  rp_up + (rp_low-rp_up)*np.sqrt(r1/Ar)*(1.-r2)
+    else:
+        # In this case, r1 and r2 are really rp and b. Assign variables to allow back-compatibility of the code:
+        rp,b = r1,r2
+        #prevent unphysical impact parameters, inclinations
+        if b > 1.+rp:
+            return -1.e10
+
+    if b > aR:
+        return -1.e10
+
     # Get residuals:
-    residuals = flux - (f0 + transit_model(rp,aR,b,t0,q1,q2,ecc,omega,P))
+    residuals = flux - (f0 + transit_model(rp,rhostar,b,t0,q1,q2,ecc,omega,P))
     # Update parameter vector:
     gp.set_parameter_vector(np.array([np.log((jitter*1e-6)**2),np.log((gpsigma*1e-6)**2),np.log((scale**2))])) 
     # Evaluate the GP log-likelihood:
     loglikelihood = gp.log_likelihood(residuals)
 
-    # Now, if stellar density is off, just return this. If it is on, calculate the corresponding log-likelihood for the density data:
-    if (not stellar_density):
-        return loglikelihood
-    if stellar_density:
-        model = ((3.*np.pi)/(G*(P*(24.*3600.0))**2))*(aR)**3
-        return loglikelihood - 0.5*(np.log(2*np.pi) + 2.*np.log(sd_sigma) + ((model-sd_mean)/sd_sigma)**2)
-
+    return loglikelihood
+    
 if ld_law != 'linear':
     n_params = 13
 else:
@@ -378,12 +400,8 @@ else:
     os.mkdir('mnest_out_folder')
     out_mnest_folder = 'mnest_out_folder'
 
-if not stellar_density:
-    out_file = out_mnest_folder+'/out_multinest_transit_GP'+ld_law+'_'
-    out_pickle_name = 'POSTERIOR_SAMPLES_GP'+ld_law+'.pkl'
-else:
-    out_file = out_mnest_folder+'/out_multinest_transit_GP'+ld_law+'_stellar_density_'
-    out_pickle_name = 'POSTERIOR_SAMPLES_GP'+ld_law+'_stellar_density.pkl'
+out_file = out_mnest_folder+'/out_multinest_transit_GP'+ld_law+'_stellar_density_'
+out_pickle_name = 'POSTERIOR_SAMPLES_GP'+ld_law+'_stellar_density.pkl'
 
 if not os.path.exists(out_pickle_name):
     # Run MultiNest:
@@ -397,9 +415,24 @@ if not os.path.exists(out_pickle_name):
     logZ = (a_lnZ / np.log(10))
     out = {}
     out['posterior_samples'] = {} 
-    out['posterior_samples']['p'] = posterior_samples[:,0]
-    out['posterior_samples']['aR'] = posterior_samples[:,1]
-    out['posterior_samples']['b'] = posterior_samples[:,2]
+    if EFF_SAMPLING:
+        pout,bout = np.zeros(posterior_samples.shape[0]),np.zeros(posterior_samples.shape[0])
+        for i in range(posterior_samples.shape[0]):
+            r1,r2 = posterior_samples[i,0],posterior_samples[i,2]
+            if r1 > Ar:
+                bout[i],pout[i] = (1+rp_low)*(1. + (r1-1.)/(1.-Ar)),\
+                      (1-r2)*rp_low + r2*rp_up
+            else:
+                bout[i],pout[i] = (1. + rp_low) + np.sqrt(r1/Ar)*r2*(rp_up-rp_low),\
+                      rp_up + (rp_low-rp_up)*np.sqrt(r1/Ar)*(1.-r2)
+        out['posterior_samples']['p'] = pout
+        out['posterior_samples']['b'] = bout
+        out['posterior_samples']['r1'] = posterior_samples[:,0]
+        out['posterior_samples']['r2'] = posterior_samples[:,2]
+    else:
+        out['posterior_samples']['p'] = posterior_samples[:,0]
+        out['posterior_samples']['b'] = posterior_samples[:,2]
+    out['posterior_samples']['rhostar'] = posterior_samples[:,1]
     posterior_samples[:,3] = posterior_samples[:,3] + tzero
     out['posterior_samples']['t0'] = posterior_samples[:,3]
     # Transformed LD coeffs (q1 and q2):
@@ -429,11 +462,14 @@ if not os.path.exists(out_pickle_name):
     out['posterior_samples']['P'] = posterior_samples[:,nprior]
     out['lnZ'] = a_lnZ
     pickle.dump(out,open(out_pickle_name,'wb'))
+    if EFF_SAMPLING:
+        posterior_samples[:,0] = pout
+        posterior_samples[:,2] = bout
 else:
     out = pickle.load(open(out_pickle_name,'rb'))
     posterior_samples = np.zeros([len(out['posterior_samples']['p']),n_params])
     posterior_samples[:,0] = out['posterior_samples']['p']
-    posterior_samples[:,1] = out['posterior_samples']['aR'] 
+    posterior_samples[:,1] = out['posterior_samples']['rhostar'] 
     posterior_samples[:,2] = out['posterior_samples']['b'] 
     posterior_samples[:,3] = out['posterior_samples']['t0']
     # Transformed LD coeffs (q1 and q2):
@@ -485,22 +521,23 @@ if ShowPlots:
     # Extract parameters:
     if ld_law != 'linear':
         if not CIRCULAR:
-            rp,aR,b,t0,q1,q2,f0,jitter,scale,gpsigma,ecc,omega,P = theta
+            rp,rhostar,b,t0,q1,q2,f0,jitter,scale,gpsigma,ecc,omega,P = theta
         else:
-            rp,aR,b,t0,q1,q2,f0,jitter,scale,gpsigma,P = theta
+            rp,rhostar,b,t0,q1,q2,f0,jitter,scale,gpsigma,P = theta
             ecc,omega = 0.,90.
     else:
         if not CIRCULAR:
-            rp,aR,b,t0,q1,f0,jitter,scale,gpsigma,ecc,omega,P = theta
+            rp,rhostar,b,t0,q1,f0,jitter,scale,gpsigma,ecc,omega,P = theta
         else:
-            rp,aR,b,t0,q1,f0,jitter,scale,gpsigma,P = theta
+            rp,rhostar,b,t0,q1,f0,jitter,scale,gpsigma,P = theta
             ecc,omega = 0.,90.
         q2 = 0.
   
+    aR = ((rhostar*G*((P*24.*3600.)**2))/(3.*np.pi))**(1./3.)
     # Substract f0 to flux:
     flux = flux - f0
     # Compute transit model:
-    model = transit_model(rp,aR,b,t0-tzero,q1,q2,ecc,omega,P)
+    model = transit_model(rp,rhostar,b,t0-tzero,q1,q2,ecc,omega,P)
     # Get residuals:
     residuals = flux - model
     # GP prediction: 
@@ -509,7 +546,10 @@ if ShowPlots:
     pred_mean_model, pred_var_model = gp.predict(residuals, tmodel-tzero, return_var=True)
     # "Detrend" flux:
     flux = flux - pred_mean
-    fout = open('transit_GP'+ld_law+'_ecc_data.dat','w')
+    if CIRCULAR:
+        fout = open('transit_GP'+ld_law+'_circ_data.dat','w')
+    else:
+        fout = open('transit_GP'+ld_law+'_ecc_data.dat','w')
     fout.write('# Time \t Transit \t Trend model \t Trend sigma\n')
     # Save model for further plotting:
     for i in range(len(t)):
@@ -526,14 +566,14 @@ if ShowPlots:
     for i in range(nsample):
         if ld_law != 'linear':
             if not CIRCULAR:
-                rp,aR,b,t0,q1,q2,f0,jitter,scale,gpsigma,ecc,omega,P = [out['posterior_samples']['p'][idx[i]],out['posterior_samples']['aR'][idx[i]],\
+                rp,rhostar,b,t0,q1,q2,f0,jitter,scale,gpsigma,ecc,omega,P = [out['posterior_samples']['p'][idx[i]],out['posterior_samples']['rhostar'][idx[i]],\
                        out['posterior_samples']['b'][idx[i]],\
                        out['posterior_samples']['t0'][idx[i]],out['posterior_samples']['q1'][idx[i]],out['posterior_samples']['q2'][idx[i]],\
                        out['posterior_samples']['norm_constant'][idx[i]],out['posterior_samples']['jitter'][idx[i]],out['posterior_samples']['scale'][idx[i]],\
                        out['posterior_samples']['gpsigma'][idx[i]],\
                        out['posterior_samples']['ecc'][idx[i]],out['posterior_samples']['omega'][idx[i]],out['posterior_samples']['P'][idx[i]]]
             else:
-                rp,aR,b,t0,q1,q2,f0,jitter,scale,gpsigma,P = [out['posterior_samples']['p'][idx[i]],out['posterior_samples']['aR'][idx[i]],\
+                rp,rhostar,b,t0,q1,q2,f0,jitter,scale,gpsigma,P = [out['posterior_samples']['p'][idx[i]],out['posterior_samples']['rhostar'][idx[i]],\
                        out['posterior_samples']['b'][idx[i]],\
                        out['posterior_samples']['t0'][idx[i]],out['posterior_samples']['q1'][idx[i]],out['posterior_samples']['q2'][idx[i]],\
                        out['posterior_samples']['norm_constant'][idx[i]],out['posterior_samples']['jitter'][idx[i]],out['posterior_samples']['scale'][idx[i]],\
@@ -541,22 +581,21 @@ if ShowPlots:
                 ecc,omega = 0.,90.
         else:
             if not CIRCULAR:
-                rp,aR,b,t0,q1,f0,jitter,scale,gpsigma,ecc,omega,P = [out['posterior_samples']['p'][idx[i]],out['posterior_samples']['aR'][idx[i]],\
+                rp,rhostar,b,t0,q1,f0,jitter,scale,gpsigma,ecc,omega,P = [out['posterior_samples']['p'][idx[i]],out['posterior_samples']['rhostar'][idx[i]],\
                        out['posterior_samples']['b'][idx[i]],\
                        out['posterior_samples']['t0'][idx[i]],out['posterior_samples']['q1'][idx[i]],\
                        out['posterior_samples']['norm_constant'][idx[i]],out['posterior_samples']['jitter'][idx[i]],out['posterior_samples']['scale'][idx[i]],\
                        out['posterior_samples']['gpsigma'][idx[i]],\
                        out['posterior_samples']['ecc'][idx[i]],out['posterior_samples']['omega'][idx[i]],out['posterior_samples']['P'][idx[i]]]
             else:
-                rp,aR,b,t0,q1,f0,jitter,scale,gpsigma,P = [out['posterior_samples']['p'][idx[i]],out['posterior_samples']['aR'][idx[i]],\
+                rp,rhostar,b,t0,q1,f0,jitter,scale,gpsigma,P = [out['posterior_samples']['p'][idx[i]],out['posterior_samples']['rhostar'][idx[i]],\
                        out['posterior_samples']['b'][idx[i]],\
                        out['posterior_samples']['t0'][idx[i]],out['posterior_samples']['q1'][idx[i]],\
                        out['posterior_samples']['norm_constant'][idx[i]],out['posterior_samples']['jitter'][idx[i]],out['posterior_samples']['scale'][idx[i]],\
                        out['posterior_samples']['gpsigma'][idx[i]], out['posterior_samples']['P'][idx[i]]]
                 ecc,omega = 0.,90. 
             q2 = 0.
-        tm = transit_model(rp,aR,b,t0,q1,q2,ecc,omega,P,tt=tmodel)
-        #print 'tm.shape:',tm.shape
+        tm = transit_model(rp,rhostar,b,t0,q1,q2,ecc,omega,P,tt=tmodel)
         if i == 0:
             mm = tm
         else:
@@ -579,9 +618,14 @@ if ShowPlots:
     plt.fill_between((tmodel-t0)*24.,model_down,model_up,color='cornflowerblue',alpha=0.5)
     matplotlib.pyplot.ylabel('Relative flux (ppm)')
     matplotlib.pyplot.xlabel('Time from transit center (hours)')
+    plt.ylim(np.min(flux-1.0),0.0)
     plt.tight_layout()
     matplotlib.pyplot.savefig('transit_'+ld_law+'.pdf')
-    fout = open('transit_'+ld_law+'.dat','w')
+
+    if CIRCULAR:
+        fout = open('transit_'+ld_law+'_circ.dat','w')
+    else:
+        fout = open('transit_'+ld_law+'_ecc.dat','w')
     fout.write('# Time \t Transit \t Trend model \t Trend sigma\n')
     # Save model for further plotting:
     for i in range(len(model_median)):
