@@ -1,6 +1,12 @@
 SINGLE --- A code for fitting single-transit events using stellar density information
 ---
 
+If you use this code, please cite Sandford et al. (2019; https://arxiv.org/abs/1908.08548). Also, note the ``juliet`` package also implements the 
+stellar density prior parametrization (https://github.com/nespinoza/juliet).
+
+Usage
+---
+
 The usage of the code is very simple. Do:
 
    ``python single.py -lcfile PATHTOFILE -sdmean MEAN_STELLAR_DENSITY -sdsigma SDERROR -t0mean MEAN_TIME_OF_TRANSIT -t0sigma T0ERROR -Pmin PMIN -Pmax PMAX -ldlaw LDLAW``
